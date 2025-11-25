@@ -1,38 +1,32 @@
 package demo;
 
 import javafx.application.Application;
-import javafx.fxml.FXMLLoader;
-import javafx.scene.Parent;
-import javafx.scene.Scene;
 import javafx.stage.Stage;
-
-import java.io.IOException;
 
 /**
  * JavaFX App
  */
 public class App extends Application {
 
-    private static Scene scene;
-
     @Override
-    public void start(Stage stage) throws IOException {
-        scene = new Scene(loadFXML("primary"), 640, 480);
-        stage.setScene(scene);
+    public void start(Stage stage) {
+        // Initialize Firebase with service account key from resources
+        try {
+            String keyPath = getClass().getResource("/serviceAccountKey.json").getPath();
+            FirebaseService.getInstance().initialize(keyPath);
+        } catch (Exception e) {
+            System.err.println("Could not load Firebase key from resources, running in mock mode");
+            FirebaseService.getInstance().initializeMock();
+        }
+        
+        // Show main menu
+        MainMenu menu = new MainMenu(stage);
+        menu.show();
         stage.show();
     }
 
-    static void setRoot(String fxml) throws IOException {
-        scene.setRoot(loadFXML(fxml));
-    }
-
-    private static Parent loadFXML(String fxml) throws IOException {
-        FXMLLoader fxmlLoader = new FXMLLoader(App.class.getResource(fxml + ".fxml"));
-        return fxmlLoader.load();
-    }
-
     public static void main(String[] args) {
-        launch();
+        launch(args);
     }
 
 }
