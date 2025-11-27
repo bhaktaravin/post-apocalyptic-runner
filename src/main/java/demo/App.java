@@ -12,10 +12,21 @@ public class App extends Application {
     public void start(Stage stage) {
         // Initialize Firebase with service account key from resources
         try {
-            String keyPath = getClass().getResource("/serviceAccountKey.json").getPath();
-            FirebaseService.getInstance().initialize(keyPath);
+            var keyResource = getClass().getResourceAsStream("/serviceAccountKey.json");
+            if (keyResource != null) {
+                System.out.println("Found serviceAccountKey.json in resources");
+                // Save to temp file since Firebase needs a file path
+                java.io.File tempFile = java.io.File.createTempFile("firebase-key", ".json");
+                tempFile.deleteOnExit();
+                java.nio.file.Files.copy(keyResource, tempFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                FirebaseService.getInstance().initialize(tempFile.getAbsolutePath());
+            } else {
+                System.err.println("serviceAccountKey.json not found in resources, running in mock mode");
+                FirebaseService.getInstance().initializeMock();
+            }
         } catch (Exception e) {
-            System.err.println("Could not load Firebase key from resources, running in mock mode");
+            System.err.println("Error loading Firebase key: " + e.getMessage());
+            e.printStackTrace();
             FirebaseService.getInstance().initializeMock();
         }
         

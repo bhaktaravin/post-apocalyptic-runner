@@ -10,14 +10,21 @@ import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.stage.Stage;
 
+import java.io.*;
+import java.nio.file.*;
+import java.util.UUID;
+
 public class MainMenu {
     private Stage stage;
     private Scene menuScene;
     private VBox leaderboardBox;
     private String playerName = "Player";
+    private String playerId;
+    private Label playerIdLabel;
     
     public MainMenu(Stage stage) {
         this.stage = stage;
+        this.playerId = loadOrGeneratePlayerId();
         createMenuScene();
     }
     
@@ -54,6 +61,29 @@ public class MainMenu {
         
         nameBox.getChildren().addAll(nameLabel, nameField);
         
+        // Player ID display
+        playerIdLabel = new Label("Player ID: " + playerId);
+        playerIdLabel.setFont(Font.font("Arial", 12));
+        playerIdLabel.setTextFill(Color.LIGHTGRAY);
+        
+        Button copyIdButton = new Button("Copy ID");
+        copyIdButton.setStyle("-fx-font-size: 10; -fx-padding: 2 8;");
+        copyIdButton.setOnAction(e -> {
+            javafx.scene.input.Clipboard clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
+            javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+            content.putString(playerId);
+            clipboard.setContent(content);
+            copyIdButton.setText("Copied!");
+            new Thread(() -> {
+                try { Thread.sleep(2000); } catch (InterruptedException ex) {}
+                javafx.application.Platform.runLater(() -> copyIdButton.setText("Copy ID"));
+            }).start();
+        });
+        
+        HBox idBox = new HBox(10);
+        idBox.setAlignment(Pos.CENTER);
+        idBox.getChildren().addAll(playerIdLabel, copyIdButton);
+        
         // Buttons
         Button playButton = createStyledButton("PLAY GAME", "#e94560");
         playButton.setOnAction(e -> startGame());
@@ -89,6 +119,7 @@ public class MainMenu {
             subtitleLabel,
             new Label(""), // Spacer
             nameBox,
+            idBox,
             playButton,
             leaderboardButton,
             settingsButton,
@@ -141,7 +172,7 @@ public class MainMenu {
     }
     
     private void startGame() {
-        FirebaseService.getInstance().setCurrentPlayer(playerName);
+        FirebaseService.getInstance().setCurrentPlayer(playerId);
         new Game(stage, this, playerName);
     }
     
@@ -202,9 +233,38 @@ public class MainMenu {
             "• SHIFT : Toggle Auto-Scroll\n" +
             "• R : Restart (when game over)\n\n" +
             "Objective:\n" +
-            "Survive as long as possible and dodge enemies!"
+            "Survive as long as possible and dodge enemies!\n\n" +
+            "Your Player ID: " + playerId
         );
         alert.showAndWait();
+    }
+    
+    private String loadOrGeneratePlayerId() {
+        Path idFile = Paths.get(System.getProperty("user.home"), ".postapocalyptic_player_id");
+        
+        try {
+            if (Files.exists(idFile)) {
+                String savedId = Files.readString(idFile).trim();
+                if (!savedId.isEmpty()) {
+                    System.out.println("Loaded existing player ID: " + savedId);
+                    return savedId;
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Could not read player ID file: " + e.getMessage());
+        }
+        
+        // Generate new player ID
+        String newId = UUID.randomUUID().toString().substring(0, 8);
+        
+        try {
+            Files.writeString(idFile, newId);
+            System.out.println("Generated new player ID: " + newId);
+        } catch (IOException e) {
+            System.err.println("Could not save player ID: " + e.getMessage());
+        }
+        
+        return newId;
     }
     
     public void show() {

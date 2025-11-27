@@ -376,7 +376,15 @@ public class Game {
     
     private void saveScoreToFirebase() {
         long survivalTime = (System.nanoTime() - gameStartTime) / 1_000_000_000; // Convert to seconds
-        FirebaseService.getInstance().saveScore(playerName, score, survivalTime);
+        System.out.println("Calling saveScore with: playerName=" + playerName + ", score=" + score + ", survivalTime=" + survivalTime);
+        
+        FirebaseService.getInstance().saveScore(playerName, score, survivalTime)
+            .thenAccept(v -> System.out.println("Firebase save completed successfully!"))
+            .exceptionally(ex -> {
+                System.err.println("Firebase save failed: " + ex.getMessage());
+                ex.printStackTrace();
+                return null;
+            });
     }
     
     private void returnToMenu() {
