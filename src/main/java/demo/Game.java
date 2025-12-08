@@ -61,6 +61,15 @@ public class Game {
     private MainMenu menu;
     private String playerName;
     
+    // Visual effects
+    private ParticleSystem particleSystem;
+    private boolean wasOnGroundLastFrame = false;
+    private double playerBounce = 0;
+    private double playerRotation = 0;
+    private long lastFootstepTime = 0;
+    private long footstepInterval = 200_000_000L; // 0.2 seconds
+    private boolean debugMode = true; // Show hitboxes
+    
     // Background layers for parallax effect
     private Image bgClouds1;
     private Image bgClouds2;
@@ -81,6 +90,7 @@ public class Game {
         this.playerName = playerName;
         canvas = new Canvas(WIDTH, HEIGHT);
         gc = canvas.getGraphicsContext2D();
+        particleSystem = new ParticleSystem();
         
         StackPane root = new StackPane(canvas);
         Scene scene = new Scene(root, WIDTH, HEIGHT);
@@ -91,16 +101,19 @@ public class Game {
         // Input handling
         scene.setOnKeyPressed(e -> {
             pressedKeys.add(e.getCode());
-            if ((e.getCode() == KeyCode.SPACE || e.getCode() == KeyCode.UP || e.getCode() == KeyCode.W) && !jumpRequested) {
+            if ((e.getCode() == KeyCode.SPACE || e.getCode() == KeyCode.UP) && !jumpRequested) {
                 jumpRequested = true;
             }
             if (e.getCode() == KeyCode.ESCAPE) {
                 returnToMenu();
             }
+            if (e.getCode() == KeyCode.H) {
+                debugMode = !debugMode; // Toggle hitboxes
+            }
         });
         scene.setOnKeyReleased(e -> {
             pressedKeys.remove(e.getCode());
-            if (e.getCode() == KeyCode.SPACE || e.getCode() == KeyCode.UP || e.getCode() == KeyCode.W) {
+            if (e.getCode() == KeyCode.SPACE || e.getCode() == KeyCode.UP) {
                 jumpRequested = false;
             }
         });
@@ -179,9 +192,29 @@ public class Game {
         // Ground collision
         if (playerY >= groundLevel) {
             playerY = groundLevel;
+            
+            // Landing particle effect (check before resetting velocity)
+            if (!wasOnGroundLastFrame) {
+                particleSystem.createLandingDust(playerX, playerY);
+                playerBounce = 5; // Squash effect
+            }
+            
             velocityY = 0;
             isOnGround = true;
+        } else {
+            isOnGround = false;
         }
+        
+        // Create running dust when moving on ground
+        if (isOnGround && (pressedKeys.contains(KeyCode.LEFT) || pressedKeys.contains(KeyCode.A) ||
+                           pressedKeys.contains(KeyCode.RIGHT) || pressedKeys.contains(KeyCode.D))) {
+            if (now - lastFootstepTime > footstepInterval) {
+                particleSystem.createRunningDust(playerX, playerY);
+                lastFootstepTime = now;
+            }
+        }
+        
+        wasOnGroundLastFrame = isOnGround;
         
         // Keep player in horizontal bounds
         playerX = Math.max(0, Math.min(WIDTH - 50, playerX));
@@ -212,6 +245,7 @@ public class Game {
             // Check collision with player
             if (!isInvulnerable && enemy.collidesWith(playerX, playerY, 50, 50)) {
                 takeDamage(20);
+                particleSystem.createExplosion(enemy.getX(), enemy.getY(), Color.rgb(150, 0, 0));
                 iterator.remove();
             }
             
@@ -246,6 +280,24 @@ public class Game {
             if (housesBgX <= -roadWidth) housesBgX += roadWidth;
         }
         
+        // Update particle system
+        particleSystem.update();
+        
+        // Create ambient particles (ash/debris)
+        particleSystem.createAmbientParticles(WIDTH, HEIGHT);
+        
+        // Smooth out player bounce animation
+        if (playerBounce > 0) {
+            playerBounce -= 0.5;
+        }
+        
+        // Add rotation when jumping
+        if (!isOnGround) {
+            playerRotation = Math.min(15, playerRotation + 1);
+        } else {
+            playerRotation = Math.max(0, playerRotation - 2);
+        }
+        
         // Increase score over time
         score++;
     }
@@ -263,41 +315,83 @@ public class Game {
         drawScrollingBackground(bgRoad, roadX);
         drawScrollingBackground(bgFence, fenceX);
         
+        // Draw particles (background layer)
+        particleSystem.render(gc);
+        
         // Draw enemies
         for (Enemy enemy : enemies) {
-            enemy.render(gc);
+            enemy.render(gc, debugMode);
         }
         
-        // Draw player (with invulnerability flash)
+        // Draw player (with invulnerability flash and animations)
         if (!isInvulnerable || (System.nanoTime() / 100_000_000) % 2 == 0) {
+            gc.save();
+            
+            // Apply squash/stretch effect
+            double bounceEffect = playerBounce / 2;
+            double playerWidth = 50 + bounceEffect;
+            double playerHeight = 50 - bounceEffect;
+            double adjustedY = playerY + bounceEffect / 2;
+            
+            // Rotate when jumping
+            if (playerRotation > 0) {
+                gc.translate(playerX + 25, adjustedY + 25);
+                gc.rotate(playerRotation);
+                gc.translate(-(playerX + 25), -(adjustedY + 25));
+            }
+            
+            // Draw player body with gradient effect
+            gc.setFill(Color.DARKBLUE);
+            gc.fillRect(playerX, adjustedY, playerWidth, playerHeight);
             gc.setFill(Color.BLUE);
-            gc.fillRect(playerX, playerY, 50, 50);
+            gc.fillRect(playerX + 3, adjustedY + 3, playerWidth - 6, playerHeight - 6);
+            
             // Player eyes
             gc.setFill(Color.WHITE);
-            gc.fillOval(playerX + 10, playerY + 15, 10, 10);
-            gc.fillOval(playerX + 30, playerY + 15, 10, 10);
+            gc.fillOval(playerX + 10, adjustedY + 15, 10, 10);
+            gc.fillOval(playerX + 30, adjustedY + 15, 10, 10);
+            
+            // Eye pupils
+            gc.setFill(Color.BLACK);
+            gc.fillOval(playerX + 13, adjustedY + 18, 4, 4);
+            gc.fillOval(playerX + 33, adjustedY + 18, 4, 4);
+            
+            gc.restore();
+            
+            // Debug: Draw hitbox
+            if (debugMode) {
+                gc.setStroke(Color.LIME);
+                gc.setLineWidth(2);
+                gc.strokeRect(playerX, playerY, 50, 50);
+            }
         }
         
         // Draw health bar
         drawHealthBar();
         
-        // Draw score
+        // Draw score and stats
         gc.setFill(Color.WHITE);
         gc.setFont(javafx.scene.text.Font.font("Arial", 20));
         gc.fillText("Score: " + score, WIDTH - 150, 30);
         gc.fillText("Enemies: " + enemies.size(), WIDTH - 150, 55);
         
+        // Debug info (particles)
+        gc.setFont(javafx.scene.text.Font.font("Arial", 14));
+        gc.fillText("Particles: " + particleSystem.getParticleCount(), WIDTH - 150, 80);
+        
         // Draw controls
         gc.setFont(javafx.scene.text.Font.font("Arial", 14));
-        gc.fillText("A/D: Move | SPACE: Jump | SHIFT: Scroll", 10, HEIGHT - 10);
+        gc.fillText("A/D: Move | SPACE: Jump | SHIFT: Scroll | H: Hitboxes", 10, HEIGHT - 10);
         
         // Draw game over screen
         if (gameOver) {
             gc.setFill(Color.rgb(0, 0, 0, 0.7));
             gc.fillRect(0, 0, WIDTH, HEIGHT);
             
+            // Animated pulsing text
+            double pulse = Math.sin(System.nanoTime() / 200_000_000.0) * 5 + 72;
             gc.setFill(Color.RED);
-            gc.setFont(javafx.scene.text.Font.font("Arial", 72));
+            gc.setFont(javafx.scene.text.Font.font("Arial", pulse));
             gc.fillText("GAME OVER", WIDTH / 2 - 200, HEIGHT / 2 - 50);
             
             gc.setFill(Color.WHITE);
@@ -353,6 +447,9 @@ public class Game {
         isInvulnerable = true;
         invulnerabilityTimer = System.nanoTime();
         
+        // Create hit effect particles
+        particleSystem.createHitEffect(playerX, playerY);
+        
         if (currentHealth <= 0) {
             currentHealth = 0;
             gameOver = true;
@@ -372,6 +469,10 @@ public class Game {
         gameOver = false;
         lastEnemySpawn = 0;
         gameStartTime = System.nanoTime();
+        playerBounce = 0;
+        playerRotation = 0;
+        wasOnGroundLastFrame = false;
+        particleSystem = new ParticleSystem();
     }
     
     private void saveScoreToFirebase() {
