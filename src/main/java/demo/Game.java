@@ -52,6 +52,11 @@ public class Game {
     private long lastEnemySpawn = 0;
     private long enemySpawnInterval = 3_000_000_000L; // 3 seconds
     
+    // Projectiles
+    private List<Projectile> projectiles = new ArrayList<>();
+    private long lastPlayerShot = 0;
+    private long playerShootCooldown = 500_000_000L; // 0.5 seconds
+    
     // Score
     private int score = 0;
     private long gameStartTime = 0;
@@ -60,6 +65,15 @@ public class Game {
     private boolean gameOver = false;
     private MainMenu menu;
     private String playerName;
+    
+    // Visual effects
+    private ParticleSystem particleSystem;
+    private boolean wasOnGroundLastFrame = false;
+    private double playerBounce = 0;
+    private double playerRotation = 0;
+    private long lastFootstepTime = 0;
+    private long footstepInterval = 200_000_000L; // 0.2 seconds
+    private boolean debugMode = true; // Show hitboxes
     
     // Background layers for parallax effect
     private Image bgClouds1;
@@ -81,6 +95,7 @@ public class Game {
         this.playerName = playerName;
         canvas = new Canvas(WIDTH, HEIGHT);
         gc = canvas.getGraphicsContext2D();
+        particleSystem = new ParticleSystem();
         
         StackPane root = new StackPane(canvas);
         Scene scene = new Scene(root, WIDTH, HEIGHT);
@@ -91,16 +106,22 @@ public class Game {
         // Input handling
         scene.setOnKeyPressed(e -> {
             pressedKeys.add(e.getCode());
-            if ((e.getCode() == KeyCode.SPACE || e.getCode() == KeyCode.UP || e.getCode() == KeyCode.W) && !jumpRequested) {
+            if ((e.getCode() == KeyCode.SPACE || e.getCode() == KeyCode.UP) && !jumpRequested) {
                 jumpRequested = true;
             }
             if (e.getCode() == KeyCode.ESCAPE) {
                 returnToMenu();
             }
+            if (e.getCode() == KeyCode.H) {
+                debugMode = !debugMode; // Toggle hitboxes
+            }
+            if (e.getCode() == KeyCode.W) {
+                // Shooting handled in update
+            }
         });
         scene.setOnKeyReleased(e -> {
             pressedKeys.remove(e.getCode());
-            if (e.getCode() == KeyCode.SPACE || e.getCode() == KeyCode.UP || e.getCode() == KeyCode.W) {
+            if (e.getCode() == KeyCode.SPACE || e.getCode() == KeyCode.UP) {
                 jumpRequested = false;
             }
         });
@@ -159,6 +180,12 @@ public class Game {
             playerX += playerSpeed;
         }
         
+        // Handle shooting
+        if (pressedKeys.contains(KeyCode.W) && now - lastPlayerShot > playerShootCooldown) {
+            shoot();
+            lastPlayerShot = now;
+        }
+        
         // Jumping
         if (jumpRequested && isOnGround) {
             velocityY = jumpStrength;
@@ -179,9 +206,29 @@ public class Game {
         // Ground collision
         if (playerY >= groundLevel) {
             playerY = groundLevel;
+            
+            // Landing particle effect (check before resetting velocity)
+            if (!wasOnGroundLastFrame) {
+                particleSystem.createLandingDust(playerX, playerY);
+                playerBounce = 5; // Squash effect
+            }
+            
             velocityY = 0;
             isOnGround = true;
+        } else {
+            isOnGround = false;
         }
+        
+        // Create running dust when moving on ground
+        if (isOnGround && (pressedKeys.contains(KeyCode.LEFT) || pressedKeys.contains(KeyCode.A) ||
+                           pressedKeys.contains(KeyCode.RIGHT) || pressedKeys.contains(KeyCode.D))) {
+            if (now - lastFootstepTime > footstepInterval) {
+                particleSystem.createRunningDust(playerX, playerY);
+                lastFootstepTime = now;
+            }
+        }
+        
+        wasOnGroundLastFrame = isOnGround;
         
         // Keep player in horizontal bounds
         playerX = Math.max(0, Math.min(WIDTH - 50, playerX));
@@ -209,9 +256,16 @@ public class Game {
             Enemy enemy = iterator.next();
             enemy.update();
             
+            // Enemy shooting (check if enemy is on screen and can see player)
+            if (enemy.canShoot() && enemy.getX() < WIDTH - 100 && enemy.getX() > 50) {
+                enemyShoot(enemy);
+                enemy.resetShootCooldown();
+            }
+            
             // Check collision with player
             if (!isInvulnerable && enemy.collidesWith(playerX, playerY, 50, 50)) {
                 takeDamage(20);
+                particleSystem.createExplosion(enemy.getX(), enemy.getY(), Color.rgb(150, 0, 0));
                 iterator.remove();
             }
             
@@ -221,6 +275,9 @@ public class Game {
                 score += 10; // Points for dodging
             }
         }
+        
+        // Update projectiles
+        updateProjectiles();
         
         // Update parallax scrolling (right to left)
         if (canAutoScroll) {
@@ -246,6 +303,24 @@ public class Game {
             if (housesBgX <= -roadWidth) housesBgX += roadWidth;
         }
         
+        // Update particle system
+        particleSystem.update();
+        
+        // Create ambient particles (ash/debris)
+        particleSystem.createAmbientParticles(WIDTH, HEIGHT);
+        
+        // Smooth out player bounce animation
+        if (playerBounce > 0) {
+            playerBounce -= 0.5;
+        }
+        
+        // Add rotation when jumping
+        if (!isOnGround) {
+            playerRotation = Math.min(15, playerRotation + 1);
+        } else {
+            playerRotation = Math.max(0, playerRotation - 2);
+        }
+        
         // Increase score over time
         score++;
     }
@@ -263,41 +338,88 @@ public class Game {
         drawScrollingBackground(bgRoad, roadX);
         drawScrollingBackground(bgFence, fenceX);
         
+        // Draw particles (background layer)
+        particleSystem.render(gc);
+        
         // Draw enemies
         for (Enemy enemy : enemies) {
-            enemy.render(gc);
+            enemy.render(gc, debugMode);
         }
         
-        // Draw player (with invulnerability flash)
+        // Draw projectiles
+        for (Projectile projectile : projectiles) {
+            projectile.render(gc);
+        }
+        
+        // Draw player (with invulnerability flash and animations)
         if (!isInvulnerable || (System.nanoTime() / 100_000_000) % 2 == 0) {
+            gc.save();
+            
+            // Apply squash/stretch effect
+            double bounceEffect = playerBounce / 2;
+            double playerWidth = 50 + bounceEffect;
+            double playerHeight = 50 - bounceEffect;
+            double adjustedY = playerY + bounceEffect / 2;
+            
+            // Rotate when jumping
+            if (playerRotation > 0) {
+                gc.translate(playerX + 25, adjustedY + 25);
+                gc.rotate(playerRotation);
+                gc.translate(-(playerX + 25), -(adjustedY + 25));
+            }
+            
+            // Draw player body with gradient effect
+            gc.setFill(Color.DARKBLUE);
+            gc.fillRect(playerX, adjustedY, playerWidth, playerHeight);
             gc.setFill(Color.BLUE);
-            gc.fillRect(playerX, playerY, 50, 50);
+            gc.fillRect(playerX + 3, adjustedY + 3, playerWidth - 6, playerHeight - 6);
+            
             // Player eyes
             gc.setFill(Color.WHITE);
-            gc.fillOval(playerX + 10, playerY + 15, 10, 10);
-            gc.fillOval(playerX + 30, playerY + 15, 10, 10);
+            gc.fillOval(playerX + 10, adjustedY + 15, 10, 10);
+            gc.fillOval(playerX + 30, adjustedY + 15, 10, 10);
+            
+            // Eye pupils
+            gc.setFill(Color.BLACK);
+            gc.fillOval(playerX + 13, adjustedY + 18, 4, 4);
+            gc.fillOval(playerX + 33, adjustedY + 18, 4, 4);
+            
+            gc.restore();
+            
+            // Debug: Draw hitbox
+            if (debugMode) {
+                gc.setStroke(Color.LIME);
+                gc.setLineWidth(2);
+                gc.strokeRect(playerX, playerY, 50, 50);
+            }
         }
         
         // Draw health bar
         drawHealthBar();
         
-        // Draw score
+        // Draw score and stats
         gc.setFill(Color.WHITE);
         gc.setFont(javafx.scene.text.Font.font("Arial", 20));
         gc.fillText("Score: " + score, WIDTH - 150, 30);
         gc.fillText("Enemies: " + enemies.size(), WIDTH - 150, 55);
         
+        // Debug info (particles)
+        gc.setFont(javafx.scene.text.Font.font("Arial", 14));
+        gc.fillText("Particles: " + particleSystem.getParticleCount(), WIDTH - 150, 80);
+        
         // Draw controls
         gc.setFont(javafx.scene.text.Font.font("Arial", 14));
-        gc.fillText("A/D: Move | SPACE: Jump | SHIFT: Scroll", 10, HEIGHT - 10);
+        gc.fillText("A/D: Move | SPACE: Jump | W: Shoot | H: Hitboxes", 10, HEIGHT - 10);
         
         // Draw game over screen
         if (gameOver) {
             gc.setFill(Color.rgb(0, 0, 0, 0.7));
             gc.fillRect(0, 0, WIDTH, HEIGHT);
             
+            // Animated pulsing text
+            double pulse = Math.sin(System.nanoTime() / 200_000_000.0) * 5 + 72;
             gc.setFill(Color.RED);
-            gc.setFont(javafx.scene.text.Font.font("Arial", 72));
+            gc.setFont(javafx.scene.text.Font.font("Arial", pulse));
             gc.fillText("GAME OVER", WIDTH / 2 - 200, HEIGHT / 2 - 50);
             
             gc.setFill(Color.WHITE);
@@ -336,14 +458,38 @@ public class Game {
     }
     
     private void spawnEnemy() {
-        double enemyY = groundLevel - 40; // Ground level minus enemy height
+        // Random enemy type based on score
+        EnemyType type;
+        double rand = random.nextDouble();
         
-        // Random chance to spawn flying enemy
-        if (random.nextDouble() < 0.3) {
-            enemyY = groundLevel - 100 - random.nextInt(100);
+        if (score < 500) {
+            // Early game: mostly runners
+            type = rand < 0.7 ? EnemyType.RUNNER : EnemyType.ZOMBIE;
+        } else if (score < 2000) {
+            // Mid game: introduce flying and shooters
+            if (rand < 0.3) type = EnemyType.ZOMBIE;
+            else if (rand < 0.6) type = EnemyType.RUNNER;
+            else if (rand < 0.8) type = EnemyType.FLYING;
+            else type = EnemyType.SHOOTER;
+        } else {
+            // Late game: more variety and difficulty
+            if (rand < 0.2) type = EnemyType.ZOMBIE;
+            else if (rand < 0.4) type = EnemyType.RUNNER;
+            else if (rand < 0.7) type = EnemyType.FLYING;
+            else type = EnemyType.SHOOTER;
         }
         
-        enemies.add(new Enemy(WIDTH, enemyY));
+        // Calculate Y position based on enemy type
+        double enemyY;
+        if (type.canFly()) {
+            // Flying enemies spawn in the air
+            enemyY = groundLevel - type.getHeight() - 100 - random.nextInt(150);
+        } else {
+            // Ground enemies spawn on the ground
+            enemyY = groundLevel - type.getHeight();
+        }
+        
+        enemies.add(new Enemy(WIDTH, enemyY, type));
     }
     
     private void takeDamage(int damage) {
@@ -352,6 +498,9 @@ public class Game {
         currentHealth -= damage;
         isInvulnerable = true;
         invulnerabilityTimer = System.nanoTime();
+        
+        // Create hit effect particles
+        particleSystem.createHitEffect(playerX, playerY);
         
         if (currentHealth <= 0) {
             currentHealth = 0;
@@ -368,15 +517,90 @@ public class Game {
         isOnGround = false;
         isInvulnerable = false;
         enemies.clear();
+        projectiles.clear();
         score = 0;
         gameOver = false;
         lastEnemySpawn = 0;
         gameStartTime = System.nanoTime();
+        playerBounce = 0;
+        playerRotation = 0;
+        wasOnGroundLastFrame = false;
+        particleSystem = new ParticleSystem();
+    }
+    
+    private void shoot() {
+        // Create projectile from player
+        double projectileX = playerX + 50; // From right side of player
+        double projectileY = playerY + 20; // Center height
+        double velocityX = 8; // Fast horizontal speed
+        projectiles.add(new Projectile(projectileX, projectileY, velocityX, 0, true));
+    }
+    
+    private void enemyShoot(Enemy enemy) {
+        // Enemy shoots towards player
+        double projectileX = enemy.getX();
+        double projectileY = enemy.getY() + 20;
+        
+        // Calculate direction to player
+        double dx = playerX - projectileX;
+        double dy = playerY - projectileY;
+        double distance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Normalize and set speed
+        double speed = 5;
+        double velocityX = (dx / distance) * speed;
+        double velocityY = (dy / distance) * speed;
+        
+        projectiles.add(new Projectile(projectileX, projectileY, velocityX, velocityY, false));
+    }
+    
+    private void updateProjectiles() {
+        Iterator<Projectile> iterator = projectiles.iterator();
+        while (iterator.hasNext()) {
+            Projectile projectile = iterator.next();
+            projectile.update();
+            
+            if (projectile.isFromPlayer()) {
+                // Check collision with enemies
+                for (Enemy enemy : enemies) {
+                    if (enemy.isActive() && projectile.collidesWith(enemy.getX(), enemy.getY(), 
+                            enemy.getType().getWidth(), enemy.getType().getHeight())) {
+                        enemy.takeDamage(25);
+                        projectile.deactivate();
+                        particleSystem.createHitEffect(enemy.getX(), enemy.getY());
+                        
+                        if (!enemy.isActive()) {
+                            score += 50; // Bonus for killing
+                            particleSystem.createExplosion(enemy.getX(), enemy.getY(), Color.rgb(150, 0, 0));
+                        }
+                        break;
+                    }
+                }
+            } else {
+                // Enemy projectile - check collision with player
+                if (!isInvulnerable && projectile.collidesWith(playerX, playerY, 50, 50)) {
+                    takeDamage(15);
+                    projectile.deactivate();
+                }
+            }
+            
+            if (!projectile.isActive()) {
+                iterator.remove();
+            }
+        }
     }
     
     private void saveScoreToFirebase() {
         long survivalTime = (System.nanoTime() - gameStartTime) / 1_000_000_000; // Convert to seconds
-        FirebaseService.getInstance().saveScore(playerName, score, survivalTime);
+        System.out.println("Calling saveScore with: playerName=" + playerName + ", score=" + score + ", survivalTime=" + survivalTime);
+        
+        FirebaseService.getInstance().saveScore(playerName, score, survivalTime)
+            .thenAccept(v -> System.out.println("Firebase save completed successfully!"))
+            .exceptionally(ex -> {
+                System.err.println("Firebase save failed: " + ex.getMessage());
+                ex.printStackTrace();
+                return null;
+            });
     }
     
     private void returnToMenu() {
